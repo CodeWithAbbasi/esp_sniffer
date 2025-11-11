@@ -4,6 +4,8 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
+#include "esp_event.h"
+#include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
@@ -16,7 +18,7 @@
 
 static const char *TAG = "ESP_SNIFFER";
 
-// ---------- Data Structures ----------
+/* ---------- Data Structures ---------- */
 typedef struct {
     char ssid[MAX_SSID_LEN];
     int rssi;
@@ -36,11 +38,11 @@ typedef struct {
 mac_entry_t mac_dict[MAX_MACS];
 int dict_size = 0;
 
-// Target AP chosen by user
+/* Target AP chosen by user */
 uint8_t target_bssid[6];
 int target_channel = 1;
 
-// ---------- UART Helper ----------
+/* ---------- UART Helper ---------- */
 void uart_read_line(char *buffer, int max_len) {
     int len = 0;
     while (1) {
@@ -58,7 +60,7 @@ void uart_read_line(char *buffer, int max_len) {
     }
 }
 
-// ---------- Wi-Fi Scan ----------
+/* ---------- Wi-Fi Scan ---------- */
 void scan_wifi() {
     wifi_scan_config_t scanConf = {
         .ssid = 0,
@@ -93,7 +95,7 @@ void scan_wifi() {
     }
 }
 
-// ---------- User Select WiFi ----------
+/* ---------- User Select WiFi ---------- */
 void select_wifi() {
     char input[8];
     printf("\nEnter the letter of the Wi-Fi to sniff:\n");
@@ -113,7 +115,7 @@ void select_wifi() {
     }
 }
 
-// ---------- MAC Dictionary Update ----------
+/* ---------- MAC Dictionary Update ---------- */
 void update_mac_dict(const uint8_t *mac) {
     for (int i = 0; i < dict_size; i++) {
         if (memcmp(mac_dict[i].mac, mac, 6) == 0) {
@@ -128,17 +130,18 @@ void update_mac_dict(const uint8_t *mac) {
     }
 }
 
-// ---------- Sniffer Packet Handler ----------
+/* ---------- Sniffer Packet Handler ---------- */
 static void sniffer_packet_handler(void *buf, wifi_promiscuous_pkt_type_t type) {
     const wifi_promiscuous_pkt_t *ppkt = (wifi_promiscuous_pkt_t *)buf;
     const uint8_t *frame = ppkt->payload;
 
+    /* Basic 802.11 header offsets — works for common data/management frames */
     const uint8_t *bssid = frame + 16;
     if (memcmp(bssid, target_bssid, 6) != 0) {
-        return; 
+        return;
     }
 
-    const uint8_t *src_mac = frame + 10; 
+    const uint8_t *src_mac = frame + 10;
     update_mac_dict(src_mac);
 
     int rssi = ppkt->rx_ctrl.rssi;
@@ -149,11 +152,10 @@ static void sniffer_packet_handler(void *buf, wifi_promiscuous_pkt_type_t type) 
              rssi, channel, dict_size);
 }
 
-// ---------- Start Sniffer ----------
-void wifi_sniffer_init() {
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+/* ---------- Start Sniffer (no esp_wifi_init here) ---------- */
+void wifi_sniffer_init_after_stop() {
+    /* At this point esp_wifi has already been initialized earlier and stopped.
+       We switch to NULL mode (no STA/AP), restart, set channel and enable promiscuous. */
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
     ESP_ERROR_CHECK(esp_wifi_start());
 
@@ -162,12 +164,16 @@ void wifi_sniffer_init() {
     esp_wifi_set_promiscuous_rx_cb(&sniffer_packet_handler);
 }
 
-// ---------- Main ----------
+/* ---------- Main ---------- */
 void app_main(void) {
+    /* NVS required for WiFi stack */
     ESP_ERROR_CHECK(nvs_flash_init());
+    /* Network stack */
     ESP_ERROR_CHECK(esp_netif_init());
+    /* Default event loop (some WiFi internals require it) */
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    // UART setup
+    /* UART setup */
     uart_config_t uart_config = {
         .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
@@ -178,20 +184,21 @@ void app_main(void) {
     uart_param_config(UART_PORT, &uart_config);
     uart_driver_install(UART_PORT, BUF_SIZE, 0, 0, NULL, 0);
 
-    // Init WiFi
-    esp_netif_create_default_wifi_sta();
+    /* ------------ WiFi init in correct order ------------ */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));                       // wifi driver init
+    esp_netif_create_default_wifi_sta();                        // create default STA netif AFTER esp_wifi_init
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));          // STA for scanning
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    // Scan & Select
+    /* Scan & Select (blocking scan) */
     scan_wifi();
     select_wifi();
 
-    // Switch to sniffer mode
+    /* Switch to sniffer: stop, change mode to NULL, restart and enable promiscuous */
     ESP_ERROR_CHECK(esp_wifi_stop());
-    wifi_sniffer_init();
+    wifi_sniffer_init_after_stop();
 
     ESP_LOGI(TAG, "Sniffer started on %02x:%02x:%02x:%02x:%02x:%02x (Ch %d)",
              target_bssid[0], target_bssid[1], target_bssid[2],
