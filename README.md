@@ -5,7 +5,7 @@ The ESP Sniffer can be configured to monitor Wi-Fi traffic in a controlled and a
 Advantages of BSSID Filtering
 
 Focused Analysis
-Filters out unrelated Wi-Fi noise and captures only traffic relevant to the specified router. This makes troubleshooting and monitoring more efficient in lab or authorized test setups.
+Filters out unrelated Wi-Fi noise and captures only the MAC addresses relevant to the specified router. This makes troubleshooting and monitoring more efficient in lab or authorized test setups.
 
 Improved Privacy & Ethics
 Unlike broad promiscuous sniffers, a BSSID-targeted approach avoids unnecessary collection of data from other nearby networks. This supports a more privacy-conscious and responsible methodology.
